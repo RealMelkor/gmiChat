@@ -2,7 +2,24 @@ defmodule Gmichat.App do
   use Application
 
   def start(_type, _args) do
-    GeminiServer.listen()
+    Gmi.init()
+    Gmi.add_route("/", fn _ ->
+      Gmi.content("# Index\n\n> Hello world\n=>/input Text input\n=>/generic/test Generic 1\n=>/generic/test/abcd Generic 2")
+    end)
+    Gmi.add_route("/generic/:name", fn args ->
+      Gmi.content("# 1 generic\n\n> 123456\n" <> args[:name] <> "\n")
+    end)
+    Gmi.add_route("/generic/:name/:second", fn args ->
+      Gmi.content("# 2 generic\n\n> First parameter : " <> args[:name] <> "\n> Second parameter : " <> args[:second] <> "\n")
+    end)
+    Gmi.add_route("/input", fn args ->
+      if args[:query] == "" do
+        Gmi.input("test input")
+      else
+        Gmi.content("You wrote " <> args[:query])
+      end
+    end)
+    Gmi.listen()
     Supervisor.start_link [], strategy: :one_for_one
   end
 end
