@@ -8,6 +8,14 @@ defmodule Gmi do
     :routes = :ets.new(:routes, [:set, :protected, :named_table])
   end
 
+  def verify_fun(_, {:extension, _}, state) do
+    {:unknown, state}
+  end
+
+  def verify_fun(_, _, state) do
+    {:valid, state}
+  end
+
   def listen(port \\ 1965) do
     :ok = :ssl.start()
     {:ok, socket} = :ssl.listen(port, [
@@ -16,7 +24,9 @@ defmodule Gmi do
       active: false,
       binary: true,
       packet: :line,
-      reuseaddr: true
+      reuseaddr: true,
+      verify_fun: {&Gmi.verify_fun/3, {0, 0}},
+      verify: :verify_peer
     ])
     Logger.info("Listening on port #{port}")
    
@@ -32,6 +42,10 @@ defmodule Gmi do
   defp getaddr(socket) do
     {:ok, {addr, port}} = :ssl.peername(socket)
     " [#{elem(addr, 0)}.#{elem(addr, 1)}.#{elem(addr, 2)}.#{elem(addr, 3)}:#{port}]"
+  end
+
+  defp get_cert(socket) do
+    :ssl.peercert(socket)
   end
 
   defp handshake(socket) do
@@ -187,6 +201,10 @@ defmodule Gmi do
 
         url = if url != "" do url else url <> "/" end
         url = if query == "" do url else url <> "?<*>" end
+        {has_cert, cert} = get_cert(socket)
+        generic = if has_cert == :ok and is_list(generic) do 
+          generic ++ [{:cert, :crypto.hash(:sha, cert) |> Base.encode16}]
+        else generic end
 
         if route == nil do
           Logger.info("Not found : " <> url <> getaddr(socket))
@@ -215,6 +233,22 @@ defmodule Gmi do
 
   def input(data) do
     "10 " <> data <> "\r\n"
+  end
+
+  def input_secret(data) do
+    "11 " <> data <> "\r\n"
+  end
+
+  def redirect(data) do
+    "30 " <> data <> "\r\n"
+  end
+
+  def bad_request(data) do
+    "59 " <> data <> "\r\n"
+  end
+
+  def cert_required(data) do
+    "60 " <> data <> "\r\n"
   end
 
 end
