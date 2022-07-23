@@ -4,7 +4,7 @@ defmodule Gmichat.Message do
   @primary_key false
   schema "messages" do
     field :message, :string
-    field :source, :integer
+    belongs_to :user, Gmichat.User
     field :timestamp, :integer
     field :destination, :integer
     field :dm, :boolean

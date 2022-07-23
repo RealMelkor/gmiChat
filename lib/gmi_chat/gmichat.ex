@@ -30,7 +30,7 @@ defmodule Gmichat do
   defp write_msg(message, from, dst, dm) do
     msg = %Gmichat.Message{
       message: message,
-      source: from,
+      user_id: from,
       destination: dst,
       timestamp: System.system_time(:second),
       dm: dm
@@ -88,9 +88,9 @@ defmodule Gmichat do
   defp try_login(name, password) do
     user = Gmichat.User |> Gmichat.Repo.get_by(name: name)
     if user != nil and Argon2.verify_pass(password, user.password) do
-      user.id
+      {:ok, user}
     else
-      "Invalid username or password"
+      {:error, "Invalid username or password"}
     end
   end
 
@@ -101,13 +101,28 @@ defmodule Gmichat do
       args[:query] == "" ->
         Gmi.input_secret("Password")
       true ->
-        ret = try_login(args[:name], args[:query])
-        if is_integer(ret) do
-          :ets.insert(:users, {args[:cert], [name: args[:name], id: ret]})
+        {state, ret} = try_login(args[:name], args[:query])
+        if state == :ok do
+          :ets.insert(:users, {
+            args[:cert], ret
+          })
           Gmi.redirect("/account")
         else
           Gmi.bad_request(ret)
         end
+    end
+  end
+
+  defp show_messages(rows, timezone, out \\ "") do
+    if rows == [] do
+      out
+    else
+      row = hd(rows)
+      {:ok, time} = DateTime.from_unix(row.timestamp + timezone * 3600)
+      show_messages(tl(rows), timezone, out 
+        <> "[" <> DateTime.to_string(time) <> "] "
+        <> "<" <> row.user.name <> "> "
+        <> row.message <> "\n")
     end
   end
 
@@ -116,13 +131,45 @@ defmodule Gmichat do
     if user == nil do
       Gmi.redirect("/")
     else
-      #results = Ecto.Query.from p in Gmichat.Message, order_by: [asc: p.timestamp], limit: 50
-      #results = results |> Gmichat.Repo.all
-      #IO.inspect(results)
-      content = "# Connected as " <> user[:name] <>
-        "\n\n" <> "## Public chat\n"
-      content = content <> "\n=>/account/write Send message"
+      results = Ecto.Query.from u in Gmichat.Message,
+      order_by: [asc: u.timestamp],
+      limit: 50,
+      where: u.dm == false and u.destination == 0
+      results = results 
+      
+      results = results |> Ecto.Query.preload(:user) |> Gmichat.Repo.all
+      content = "# Connected as " <> user.name <>
+        "\n\n" <> "## Public chat\n" <> show_messages(results, user.timezone)
+        <> "\n=>/account/write Send message"
+        <> "\n=>/account/zone Set time zone [UTC " 
+        <> to_string(user.timezone) <> "]"
       Gmi.content(content)
+    end
+  end
+
+  defp account_zone(args) do
+    user = get_user(args[:cert])
+    if user == nil do
+      Gmi.redirect("/")
+    else
+      if args[:query] == "" do
+        Gmi.input("UTC offset")
+      else
+        ret = Integer.parse(args[:query])
+        ret = if ret == :error do ret else elem(ret, 0) end
+        cond do
+          ret == :error ->
+            Gmi.bad_request("Invalid value")
+          ret < -14 or ret > 14 ->
+            Gmi.bad_request("Offset must be between -14 and 14")
+          true ->
+            Ecto.Changeset.change(user, %{timezone: ret}) |>
+            Gmichat.User.changeset |>
+            Gmichat.Repo.update!
+            :ets.insert(:users, {args[:cert], %{user | timezone: ret}})
+            Gmi.redirect("/account")
+        end
+      end
     end
   end
 
@@ -132,9 +179,9 @@ defmodule Gmichat do
       Gmi.redirect("/")
     else
       if args[:query] == "" do
-        Gmi.input(user[:name])
+        Gmi.input(user.name)
       else
-        ret = write_msg(args[:query], user[:id], 0, false)
+        ret = write_msg(args[:query], user.id, 0, false)
         if ret == :ok do
           Gmi.redirect("/account")
         else
@@ -172,6 +219,7 @@ defmodule Gmichat do
     Gmi.add_route("/login/:name", fn args -> login_complete(args) end)
     Gmi.add_route("/account", fn args -> account(args) end)
     Gmi.add_route("/account/write", fn args -> account_write(args) end)
+    Gmi.add_route("/account/zone", fn args -> account_zone(args) end)
     Gmi.listen()
   end
   
