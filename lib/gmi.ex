@@ -206,6 +206,7 @@ defmodule Gmi do
           args ++ [{:cert, :crypto.hash(:sha, cert) |> Base.encode16}]
         else args end
         {:ok, addr} = :ssl.peername(socket)
+        args = if args == nil do [] else args end
         args = args ++ [{:addr, addr}, {:query, format_query(query)}]
 
         if route == nil do

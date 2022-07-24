@@ -12,14 +12,14 @@ defmodule Gmichat do
   @max_messages_timeout 2
 
   defp main_page(args) do
-    content = "# GmiChat\n\n" <>
       if get_user(args[:cert]) == nil do
-        "=>/login Login\n" <>
-        "=>/register Register\n"
+        Gmi.content(
+          "# GmiChat\n\n" <>
+          "=>/login Login\n" <>
+          "=>/register Register\n")
       else
-        "=>/account/disconnect Disconnect\n"
+        Gmi.redirect("/account")
       end
-    Gmi.content(content)
   end
 
   defp can_attempt(table, key, threshold) do
@@ -35,14 +35,14 @@ defmodule Gmichat do
     })
   end
 
-  defp register(args) do
+  defp ask_input(args, field, to) do
     cond do
       args[:cert] == nil ->
         Gmi.cert_required("Certificate required to register")
       args[:query] == "" ->
-        Gmi.input("Username")
+        Gmi.input(field)
       true ->
-        Gmi.redirect("/register/" <> args[:query])
+        Gmi.redirect(to <> args[:query])
     end
   end
 
@@ -111,17 +111,7 @@ defmodule Gmichat do
         else
           Gmi.failure(ret)
         end
-    end
-  end
 
-  defp login(args) do
-    cond do
-      args[:cert] == nil ->
-        Gmi.cert_required("Certificate required to register")
-      args[:query] == "" ->
-        Gmi.input("Username")
-      true ->
-        Gmi.redirect("/login/" <> args[:query])
     end
   end
 
@@ -176,69 +166,121 @@ defmodule Gmichat do
     end
   end
 
-  defp account(args) do
-    user = get_user(args[:cert])
-    if user == nil do
-      Gmi.redirect("/")
-    else
-      results = Ecto.Query.from u in Gmichat.Message,
-      order_by: [desc: u.timestamp],
-      limit: 30,
-      where: u.dm == false and u.destination == 0
-      results = results 
-      
-      results = results |> Ecto.Query.preload(:user) |> Gmichat.Repo.all
-      content = "# Connected as " <> user.name <>
-        "\n\n" <> "## Public chat\n" <> show_messages(results, user.timezone)
-        <> "\n=>/account/write Send message"
-        <> "\n=>/account/zone Set time zone [UTC " 
-        <> to_string(user.timezone) <> "]"
-        <> "\n=>/account/disconnect Disconnect" 
-      Gmi.content(content)
-    end
+  defp account(_, user) do
+    results = Ecto.Query.from m in Gmichat.Message,
+    order_by: [desc: m.timestamp],
+    limit: 30,
+    where: m.dm == false and m.destination == 0
+    
+    results = results |> Ecto.Query.preload(:user) |> Gmichat.Repo.all
+    content = "# Connected as " <> user.name <>
+      "\n\n" <> "## Public chat\n" <> show_messages(results, user.timezone)
+      <> "\n=>/account/write Send message"
+      <> "\n=>/account/dm Send direct message"
+      <> "\n=>/account/contacts Contacts"
+      <> "\n=>/account/zone Set time zone [UTC " 
+      <> to_string(user.timezone) <> "]"
+      <> "\n=>/account/disconnect Disconnect" 
+    Gmi.content(content)
   end
 
-  defp account_zone(args) do
-    user = get_user(args[:cert])
-    if user == nil do
-      Gmi.redirect("/")
+  defp account_zone(args, user) do
+    if args[:query] == "" do
+      Gmi.input("UTC offset")
     else
-      if args[:query] == "" do
-        Gmi.input("UTC offset")
-      else
-        ret = Integer.parse(args[:query])
-        ret = if ret == :error do ret else elem(ret, 0) end
-        cond do
-          ret == :error ->
-            Gmi.bad_request("Invalid value")
-          ret < -14 or ret > 14 ->
-            Gmi.bad_request("Offset must be between -14 and 14")
-          true ->
-            Ecto.Changeset.change(user, %{timezone: ret}) |>
-            Gmichat.User.changeset |>
-            Gmichat.Repo.update!
-            :ets.insert(:users, {args[:cert], %{user | timezone: ret}})
-            Gmi.redirect("/account")
-        end
-      end
-    end
-  end
-
-  defp account_write(args) do
-    user = get_user(args[:cert])
-    if user == nil do
-      Gmi.redirect("/")
-    else
-      if args[:query] == "" do
-        Gmi.input(user.name)
-      else
-        ret = write_msg(args[:query], user.id, 0, false)
-        if ret == :ok do
+      ret = Integer.parse(args[:query])
+      ret = if ret == :error do ret else elem(ret, 0) end
+      cond do
+        ret == :error ->
+          Gmi.bad_request("Invalid value")
+        ret < -14 or ret > 14 ->
+          Gmi.bad_request("Offset must be between -14 and 14")
+        true ->
+          Ecto.Changeset.change(user, %{timezone: ret}) |>
+          Gmichat.User.changeset |>
+          Gmichat.Repo.update!
+          :ets.insert(:users, {args[:cert], %{user | timezone: ret}})
           Gmi.redirect("/account")
-        else
-          Gmi.failure(ret)
-        end
       end
+    end
+  end
+
+  defp account_write(args, user) do
+    if args[:query] == "" do
+      Gmi.input(user.name)
+    else
+      ret = write_msg(args[:query], user.id, 0, false)
+      if ret == :ok do
+        Gmi.redirect("/account")
+      else
+        Gmi.failure(ret)
+      end
+    end
+  end
+
+  def dm(args, user) do
+    to = Gmichat.User |> Gmichat.Repo.get_by(name: args[:name])
+    if to != nil and user.id != to.id do
+      results = Ecto.Query.from m in Gmichat.Message,
+      order_by: [desc: m.timestamp],
+      limit: 30,
+      where: m.dm == true and
+      (m.destination == ^to.id and m.user_id == ^user.id) or
+      (m.destination == ^user.id and m.user_id == ^to.id)
+      results = results |> Ecto.Query.preload(:user) |> Gmichat.Repo.all
+      Gmi.content(
+        "=>/account/contacts Go back\n\n" <>
+        "# " <> to.name <> " - Direct messages\n\n" <>
+        show_messages(results, user.timezone) <>
+        "\n=>/account/dm/" <> to.name <> "/write Send message")
+    else
+      Gmi.bad_request("User " <> args[:name] <> " not found")
+    end
+  end
+
+  def dm_write(args, user) do
+    if args[:query] == "" do
+      Gmi.input("Send message")
+    else
+      to = Gmichat.User |> Gmichat.Repo.get_by(name: args[:name])
+      if to != nil and user.id != to.id do
+        write_msg(args[:query], user.id, to.id, true)
+        Gmi.redirect("/account/dm/" <> to.name)
+      else
+        Gmi.bad_request("User " <> args[:name] <> " not found")
+      end
+    end
+  end
+
+  def show_contacts(rows, out \\ "") do
+    if rows == [] do
+      out
+    else
+      name = hd(hd(rows))
+      show_contacts(tl(rows), out <> "=>/account/dm/" <> 
+        name <> " " <> name <> "\n")
+    end
+  end
+
+  def contacts(_, user) do
+    query = """
+    SELECT DISTINCT u.name FROM messages m
+    INNER JOIN users u ON m.user_id=u.id
+    WHERE m.dm = 1 AND m.destination = $1::integer
+    ORDER BY m.timestamp DESC;
+    """
+    results = Ecto.Adapters.SQL.query!(Gmichat.Repo, query, [user.id])
+    
+    Gmi.content("=>/account Go back\n\n# Contacts\n\n" <>
+      show_contacts(results.rows))
+  end
+
+  def connected(args, func) do
+    user = get_user(args[:cert])
+    if user == nil do
+      Gmi.redirect("/")
+    else
+      func.(args, user)
     end
   end
 
@@ -279,18 +321,50 @@ defmodule Gmichat do
     :messages_rate = :ets.new(:messages_rate, [:set, :public, :named_table])
     Gmi.init()
     Gmi.add_route("/", fn args -> main_page(args) end)
-    Gmi.add_route("/register", fn args -> register(args) end)
+    Gmi.add_route("/register", fn args -> ask_input(args, "Username", "/register/") end)
     Gmi.add_route("/register/:name", fn args -> register_complete(args) end)
     Gmi.add_route("/register/x/success", fn _ ->
       Gmi.content(
         "# Registration complete\n\n" <>
         "=>/login You can now login with your account\n")
     end)
-    Gmi.add_route("/login", fn args -> login(args) end)
+    Gmi.add_route("/login", fn args -> ask_input(args, "Username", "/login/") end)
     Gmi.add_route("/login/:name", fn args -> login_complete(args) end)
-    Gmi.add_route("/account", fn args -> account(args) end)
-    Gmi.add_route("/account/write", fn args -> account_write(args) end)
-    Gmi.add_route("/account/zone", fn args -> account_zone(args) end)
+    Gmi.add_route("/account", fn args -> 
+      connected(args, fn args, user ->
+        account(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/write", fn args ->
+      connected(args, fn args, user ->
+        account_write(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/zone", fn args ->
+      connected(args, fn args, user ->
+        account_zone(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/dm", fn args -> 
+      connected(args, fn args, _ ->
+        ask_input(args, "Username", "/account/dm/") 
+      end)
+    end)
+    Gmi.add_route("/account/dm/:name", fn args -> 
+      connected(args, fn args, user ->
+        dm(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/dm/:name/write", fn args -> 
+      connected(args, fn args, user ->
+        dm_write(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/contacts", fn args -> 
+      connected(args, fn args, user ->
+        contacts(args, user)
+      end)
+    end)
     Gmi.add_route("/account/disconnect", fn args -> 
       if args[:cert] != nil do
         :ets.delete(:users, args[:cert]) 
