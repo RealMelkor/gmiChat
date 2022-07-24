@@ -5,15 +5,34 @@ require Ecto.Query
 
 defmodule Gmichat do
 
+  @max_register 3
+  @max_attemps_ip 10
+  @max_attemps_account 50
+  @max_messages 3
+  @max_messages_timeout 2
+
   defp main_page(args) do
     content = "# GmiChat\n\n" <>
       if get_user(args[:cert]) == nil do
         "=>/login Login\n" <>
         "=>/register Register\n"
       else
-        "=>/disconnect Disconnect\n"
+        "=>/account/disconnect Disconnect\n"
       end
     Gmi.content(content)
+  end
+
+  defp can_attempt(table, key, threshold) do
+    rows = :ets.lookup(table, key)
+    rows == [] or elem(hd(rows), 1) < threshold
+  end
+
+  defp add_attempt(table, key) do
+    value = :ets.lookup(table, key)
+    value = if value == [] do 0 else elem(hd(value), 1) end
+    :ets.insert(table, {
+      key, value + 1
+    })
   end
 
   defp register(args) do
@@ -35,18 +54,36 @@ defmodule Gmichat do
       timestamp: System.system_time(:second),
       dm: dm
     }
-    {state, ret} = msg |> Gmichat.Repo.insert
-    if state == :ok do
-      :ok
+    last_message = :ets.lookup(:messages_rate, from)
+    last_message = if last_message != [] do
+      elem(hd(last_message), 1)
     else
-      elem(elem(hd(ret.errors), 1), 0)
+      last_message
+    end
+    last_message = 
+      if last_message == [] or elem(last_message, 0) + @max_messages_timeout 
+          < System.system_time(:second) do 
+        {System.system_time(:second), 1}
+      else 
+        {elem(last_message, 0), elem(last_message, 1) + 1}
+      end
+    if elem(last_message, 1) > @max_messages do
+      "You sent too many messages in a short period of time"
+    else
+      :ets.insert(:messages_rate, {from, last_message})
+      {state, ret} = msg |> Gmichat.Repo.insert
+      if state == :ok do
+        :ok
+      else
+        elem(elem(hd(ret.errors), 1), 0)
+      end
     end
   end
 
   defp create_user(name, password) do
     user = %Gmichat.User{
       name: String.downcase(name), 
-      password: Argon2.hash_pwd_salt(password), 
+      password: password,
       timezone: 0,
       timestamp: System.system_time(:second)
     }
@@ -54,7 +91,7 @@ defmodule Gmichat do
     if state == :ok do
       :ok
     else
-      name <> " " <> elem(elem(hd(ret.errors), 1), 0)
+      to_string(elem(hd(ret.errors), 0)) <> " " <> elem(elem(hd(ret.errors), 1), 0)
     end
   end
 
@@ -64,12 +101,15 @@ defmodule Gmichat do
         Gmi.cert_required("Certificate required to register")
       args[:query] == "" ->
         Gmi.input_secret("Password")
+      !can_attempt(:registrations, elem(args[:addr], 0), @max_register) ->
+        Gmi.failure("Temporary registration limit reached for your ip")
       true ->
         ret = create_user(args[:name], args[:query])
         if ret == :ok do
+          add_attempt(:registrations, elem(args[:addr], 0))
           Gmi.redirect("/register/x/success")
         else
-          Gmi.bad_request(ret)
+          Gmi.failure(ret)
         end
     end
   end
@@ -85,12 +125,22 @@ defmodule Gmichat do
     end
   end
 
-  defp try_login(name, password) do
-    user = Gmichat.User |> Gmichat.Repo.get_by(name: name)
-    if user != nil and Argon2.verify_pass(password, user.password) do
-      {:ok, user}
-    else
-      {:error, "Invalid username or password"}
+  defp try_login(name, password, addr) do
+    name = String.downcase(name)
+    cond do
+      !can_attempt(:account_attempts, name, @max_attemps_account) ->
+        {:error, "Too many login attempts for this account"}
+      !can_attempt(:ip_attempts, addr, @max_attemps_ip) ->
+        {:error, "Too many login attempts from your ip"}
+      true ->
+        user = Gmichat.User |> Gmichat.Repo.get_by(name: name)
+        if user != nil and Argon2.verify_pass(password, user.password) do
+          {:ok, user}
+        else
+          add_attempt(:account_attempts, name)
+          add_attempt(:ip_attempts, addr)
+          {:error, "Invalid username or password"}
+        end
     end
   end
 
@@ -101,14 +151,14 @@ defmodule Gmichat do
       args[:query] == "" ->
         Gmi.input_secret("Password")
       true ->
-        {state, ret} = try_login(args[:name], args[:query])
+        {state, ret} = try_login(args[:name], args[:query], elem(args[:addr], 0))
         if state == :ok do
           :ets.insert(:users, {
-            args[:cert], ret
+            args[:cert], %{ret | password: :ignore}
           })
           Gmi.redirect("/account")
         else
-          Gmi.bad_request(ret)
+          Gmi.failure(ret)
         end
     end
   end
@@ -119,10 +169,10 @@ defmodule Gmichat do
     else
       row = hd(rows)
       {:ok, time} = DateTime.from_unix(row.timestamp + timezone * 3600)
-      show_messages(tl(rows), timezone, out 
-        <> "[" <> DateTime.to_string(time) <> "] "
+      show_messages(tl(rows), timezone, 
+        "[" <> String.slice(DateTime.to_string(time), 0..-2) <> "] "
         <> "<" <> row.user.name <> "> "
-        <> row.message <> "\n")
+        <> row.message <> "\n" <> out)
     end
   end
 
@@ -132,8 +182,8 @@ defmodule Gmichat do
       Gmi.redirect("/")
     else
       results = Ecto.Query.from u in Gmichat.Message,
-      order_by: [asc: u.timestamp],
-      limit: 50,
+      order_by: [desc: u.timestamp],
+      limit: 30,
       where: u.dm == false and u.destination == 0
       results = results 
       
@@ -143,6 +193,7 @@ defmodule Gmichat do
         <> "\n=>/account/write Send message"
         <> "\n=>/account/zone Set time zone [UTC " 
         <> to_string(user.timezone) <> "]"
+        <> "\n=>/account/disconnect Disconnect" 
       Gmi.content(content)
     end
   end
@@ -185,7 +236,7 @@ defmodule Gmichat do
         if ret == :ok do
           Gmi.redirect("/account")
         else
-          Gmi.bad_request(ret)
+          Gmi.failure(ret)
         end
       end
     end
@@ -204,8 +255,28 @@ defmodule Gmichat do
     end
   end
 
+  defp decrease_limit_iter(table, rows) do
+    if rows != [] do
+      :ets.insert(table, {elem(hd(rows), 0), elem(hd(rows), 1) - 1})
+      decrease_limit_iter(table, tl(rows))
+    end
+  end
+
+  defp decrease_limit() do
+    select = [{{:"$1", :"$2"}, [{:>, :"$2", 0}], [{{:"$1", :"$2"}}]}]
+    decrease_limit_iter(:registrations, :ets.select(:registrations, select))
+    decrease_limit_iter(:account_attempts, :ets.select(:account_attempts, select))
+    decrease_limit_iter(:ip_attempts, :ets.select(:ip_attempts, select))
+    :timer.sleep(30000)
+    decrease_limit()
+  end
+
   def start() do
     :users = :ets.new(:users, [:set, :public, :named_table])
+    :registrations = :ets.new(:registrations, [:set, :public, :named_table])
+    :ip_attempts = :ets.new(:ip_attempts, [:set, :public, :named_table])
+    :account_attempts = :ets.new(:account_attempts, [:set, :public, :named_table])
+    :messages_rate = :ets.new(:messages_rate, [:set, :public, :named_table])
     Gmi.init()
     Gmi.add_route("/", fn args -> main_page(args) end)
     Gmi.add_route("/register", fn args -> register(args) end)
@@ -220,6 +291,13 @@ defmodule Gmichat do
     Gmi.add_route("/account", fn args -> account(args) end)
     Gmi.add_route("/account/write", fn args -> account_write(args) end)
     Gmi.add_route("/account/zone", fn args -> account_zone(args) end)
+    Gmi.add_route("/account/disconnect", fn args -> 
+      if args[:cert] != nil do
+        :ets.delete(:users, args[:cert]) 
+      end
+      Gmi.redirect("/")
+    end)
+    spawn_link(fn -> decrease_limit() end)
     Gmi.listen()
   end
   

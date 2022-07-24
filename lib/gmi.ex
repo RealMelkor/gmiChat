@@ -197,22 +197,23 @@ defmodule Gmi do
         end
                 
         table = :ets.select(:routes, [{:"$1", [], [:"$1"]}])
-        {route, generic} = get_generic(get_route(url), table)
+        {route, args} = get_generic(get_route(url), table)
 
         url = if url != "" do url else url <> "/" end
         url = if query == "" do url else url <> "?<*>" end
         {has_cert, cert} = get_cert(socket)
-        generic = if has_cert == :ok and is_list(generic) do 
-          generic ++ [{:cert, :crypto.hash(:sha, cert) |> Base.encode16}]
-        else generic end
+        args = if has_cert == :ok and is_list(args) do 
+          args ++ [{:cert, :crypto.hash(:sha, cert) |> Base.encode16}]
+        else args end
+        {:ok, addr} = :ssl.peername(socket)
+        args = args ++ [{:addr, addr}, {:query, format_query(query)}]
 
         if route == nil do
           Logger.info("Not found : " <> url <> getaddr(socket))
           :ssl.send(socket, "59 Page not found\r\n")
         else
           Logger.info("Request : " <> url <> getaddr(socket))
-          :ssl.send(socket, elem(route, 1).
-            (generic ++ [{:query, format_query(query)}]))
+          :ssl.send(socket, elem(route, 1).(args))
         end
       else
         Logger.error("Client read failure : " <> data <> getaddr(socket))
@@ -241,6 +242,10 @@ defmodule Gmi do
 
   def redirect(data) do
     "30 " <> data <> "\r\n"
+  end
+
+  def failure(data) do
+    "40 " <> data <> "\r\n"
   end
 
   def bad_request(data) do

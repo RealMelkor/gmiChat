@@ -6,13 +6,51 @@ defmodule Gmichat.User do
     field :password, :string
     field :timezone, :integer
     field :timestamp, :integer
-    #has_many :messages, Gmichat.Message
+  end
+
+  def validate_password(changeset) do
+    password = Ecto.Changeset.get_field(changeset, :password)
+    len = if is_bitstring(password) do String.length(password) else 0 end
+    cond do
+      password == :ignore ->
+        changeset
+      len < 6 or len > 24 ->
+        Ecto.Changeset.add_error(changeset, :password, "must be between 6 and 24")
+      true ->
+        Ecto.Changeset.put_change(changeset, :password, Argon2.hash_pwd_salt(password))
+    end
+  end
+  
+  def is_name_valid(name) do
+    if name == [] do
+      true
+    else
+      c = hd(name)
+      if (c >= ?a and c <= ?z) or (c >= ?A and c <= ?Z) or (c >= ?0 and c <= ?9) do
+        is_name_valid(tl(name))
+      else
+        false
+      end
+    end
+  end
+
+  def validate_name(changeset) do
+    name = Ecto.Changeset.get_field(changeset, :name)
+    len = String.length(name)
+    cond do
+      !is_name_valid(to_charlist(name)) ->
+        Ecto.Changeset.add_error(changeset, :name, "must contains only letters and numbers")
+      len < 3 or len > 12 ->
+        Ecto.Changeset.add_error(changeset, :name, "must be between 3 and 12 characters")
+      true -> 
+        changeset
+    end
   end
 
   def validate_timezone(changeset) do
     zone = Ecto.Changeset.get_field(changeset, :timezone)
     if zone < -14 or zone > 14 do
-      Ecto.Changeset.add_error(changeset, :timezone, "is not between -14 and 14")
+      Ecto.Changeset.add_error(changeset, :timezone, "must be between -14 and 14")
     else
       changeset
     end
@@ -21,6 +59,8 @@ defmodule Gmichat.User do
   def changeset(user, params \\ %{}) do
     user
     |> Ecto.Changeset.cast(params, [:name, :password, :timezone, :timestamp])
+    |> validate_name
+    |> validate_password
     |> validate_timezone
     |> Ecto.Changeset.unique_constraint(:name)
   end
