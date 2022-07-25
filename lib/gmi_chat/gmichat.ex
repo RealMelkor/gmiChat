@@ -264,10 +264,14 @@ defmodule Gmichat do
 
   def contacts(_, user) do
     query = """
-    SELECT DISTINCT u.name FROM messages m
-    INNER JOIN users u ON m.user_id=u.id
-    WHERE m.dm = 1 AND m.destination = $1::integer
-    ORDER BY m.timestamp DESC;
+    SELECT DISTINCT CASE $1::integer WHEN u.id THEN d.name ELSE u.name END FROM messages m
+    INNER JOIN users u ON m.user_id = u.id
+    INNER JOIN users d ON m.destination = d.id
+    WHERE m.dm = 1 AND (m.destination = $1::integer OR m.user_id = $1::integer)
+    ORDER BY (SELECT MAX(timestamp) 
+      FROM messages WHERE 
+        (user_id=m.destination AND destination=m.user_id) OR
+        (user_id=m.user_id AND destination=m.destination)) DESC;
     """
     results = Ecto.Adapters.SQL.query!(Gmichat.Repo, query, [user.id])
     
