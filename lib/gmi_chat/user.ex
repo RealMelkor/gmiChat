@@ -5,6 +5,8 @@ defmodule Gmichat.User do
     field :name, :string
     field :password, :string
     field :timezone, :integer
+    field :leftmargin, :integer
+    field :linelength, :integer
     field :timestamp, :integer
   end
 
@@ -56,12 +58,34 @@ defmodule Gmichat.User do
     end
   end
 
+  def validate_linelength(changeset) do
+    ll = Ecto.Changeset.get_field(changeset, :linelength)
+    if ll < 0 or ll > 1024 do
+      Ecto.Changeset.add_error(changeset, :linelength, "must be between 0 and 1024")
+    else
+      changeset
+    end
+  end
+
+  def validate_leftmargin(changeset) do
+    ll = Ecto.Changeset.get_field(changeset, :leftmargin)
+    if ll < 0 or ll > 4096 do
+      Ecto.Changeset.add_error(changeset, :leftmargin, "must be between 0 and 4096")
+    else
+      changeset
+    end
+  end
+
+
   def changeset(user, params \\ %{}) do
     user
-    |> Ecto.Changeset.cast(params, [:name, :password, :timezone, :timestamp])
+    |> Ecto.Changeset.cast(params, [:name, :password, :timezone,
+                                    :linelength, :leftmargin, :timestamp])
     |> validate_name
     |> validate_password
     |> validate_timezone
+    |> validate_linelength
+    |> validate_leftmargin
     |> Ecto.Changeset.unique_constraint(:name)
   end
 

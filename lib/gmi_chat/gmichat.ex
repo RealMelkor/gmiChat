@@ -85,6 +85,8 @@ defmodule Gmichat do
       name: String.downcase(name), 
       password: password,
       timezone: 0,
+      linelength: 0,
+      leftmargin: 0,
       timestamp: System.system_time(:second)
     }
     {state, ret} = Gmichat.User.changeset(user, %{}) |> Gmichat.Repo.insert
@@ -153,16 +155,41 @@ defmodule Gmichat do
     end
   end
 
-  defp show_messages(rows, timezone, out \\ "") do
+  defp format_message(message, llength, margin, pos \\ 0) do
+    if llength == 0 do
+      String.duplicate(" ", margin) <> message <> "\n"
+    else
+      lastline = pos + llength >= String.length(message)
+      length = if lastline do
+        String.length(message) - pos
+      else
+        llength
+      end
+      new_message =
+        String.slice(message, 0, pos) <>
+        String.duplicate(" ", margin) <>
+        String.slice(message, pos, length) <> "\n" <>
+        String.slice(message, pos + length, String.length(message) - pos - length)
+      if lastline do
+        new_message
+      else
+        format_message(new_message,
+            llength, margin, pos + llength + margin + 1)
+      end
+    end
+  end
+
+  defp show_messages(rows, timezone, llength, margin, out \\ "") do
     if rows == [] do
       out
     else
       row = hd(rows)
       {:ok, time} = DateTime.from_unix(row.timestamp + timezone * 3600)
-      show_messages(tl(rows), timezone, 
+      show_messages(tl(rows), timezone, llength, margin,
+        format_message(
         "[" <> String.slice(DateTime.to_string(time), 0..-2) <> "] "
         <> "<" <> row.user.name <> "> "
-        <> row.message <> "\n" <> out)
+        <> row.message, llength, margin) <> out)
     end
   end
 
@@ -174,13 +201,19 @@ defmodule Gmichat do
     
     results = results |> Ecto.Query.preload(:user) |> Gmichat.Repo.all
     content = "# Connected as " <> user.name <>
-      "\n\n" <> "## Public chat\n" <> show_messages(results, user.timezone)
+      "\n\n" <> "## Public chat\n"
+      <> show_messages(results, user.timezone, user.linelength, user.leftmargin)
       <> "\n=>/account/write Send message"
       <> "\n=>/account/dm Send direct message"
       <> "\n=>/account/contacts Contacts"
+      <> "\n\n## Options\n"
       <> "\n=>/account/zone Set time zone [UTC " 
       <> to_string(user.timezone) <> "]"
-      <> "\n=>/account/disconnect Disconnect" 
+      <> "\n=>/account/llength Set line length [" 
+      <> to_string(user.linelength) <> "]"
+      <> "\n=>/account/margin Set left margin [" 
+      <> to_string(user.leftmargin) <> "]"
+      <> "\n\n=>/account/disconnect Disconnect" 
     Gmi.content(content)
   end
 
@@ -200,6 +233,48 @@ defmodule Gmichat do
           Gmichat.User.changeset |>
           Gmichat.Repo.update!
           :ets.insert(:users, {args[:cert], %{user | timezone: ret}})
+          Gmi.redirect("/account")
+      end
+    end
+  end
+
+  defp account_line_length(args, user) do
+    if args[:query] == "" do
+      Gmi.input("Chat line length (0 = no limit)")
+    else
+      ret = Integer.parse(args[:query])
+      ret = if ret == :error do ret else elem(ret, 0) end
+      cond do
+        ret == :error ->
+          Gmi.bad_request("Invalid value")
+        ret < 0 or ret > 1024 ->
+          Gmi.bad_request("Line length must be between 0 and 1024")
+        true ->
+          Ecto.Changeset.change(user, %{linelength: ret}) |>
+          Gmichat.User.changeset |>
+          Gmichat.Repo.update!
+          :ets.insert(:users, {args[:cert], %{user | linelength: ret}})
+          Gmi.redirect("/account")
+      end
+    end
+  end
+
+  defp account_left_margin(args, user) do
+    if args[:query] == "" do
+      Gmi.input("Left margin (0 = no margin)")
+    else
+      ret = Integer.parse(args[:query])
+      ret = if ret == :error do ret else elem(ret, 0) end
+      cond do
+        ret == :error ->
+          Gmi.bad_request("Invalid value")
+        ret < 0 or ret > 4096 ->
+          Gmi.bad_request("Left margin must be between 0 and 4096")
+        true ->
+          Ecto.Changeset.change(user, %{leftmargin: ret}) |>
+          Gmichat.User.changeset |>
+          Gmichat.Repo.update!
+          :ets.insert(:users, {args[:cert], %{user | leftmargin: ret}})
           Gmi.redirect("/account")
       end
     end
@@ -231,7 +306,7 @@ defmodule Gmichat do
       Gmi.content(
         "=>/account/contacts Go back\n\n" <>
         "# " <> to.name <> " - Direct messages\n\n" <>
-        show_messages(results, user.timezone) <>
+        show_messages(results, user.timezone, user.linelength, user.marginleft) <>
         "\n=>/account/dm/" <> to.name <> "/write Send message")
     else
       Gmi.bad_request("User " <> args[:name] <> " not found")
@@ -347,6 +422,16 @@ defmodule Gmichat do
     Gmi.add_route("/account/zone", fn args ->
       connected(args, fn args, user ->
         account_zone(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/llength", fn args ->
+      connected(args, fn args, user ->
+        account_line_length(args, user)
+      end)
+    end)
+    Gmi.add_route("/account/margin", fn args ->
+      connected(args, fn args, user ->
+        account_left_margin(args, user)
       end)
     end)
     Gmi.add_route("/account/dm", fn args -> 
