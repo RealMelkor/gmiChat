@@ -15,8 +15,14 @@ defmodule Gmichat do
       if get_user(args[:cert]) == nil do
         Gmi.content(
           "# GmiChat\n\n" <>
+          "Chat platform for the Gemini protocol\n" <>
+          "A client certificate is required to register and to login\n\n" <>
           "=>/login Login\n" <>
-          "=>/register Register\n")
+          "=>/register Register\n\n" <>
+          "## Softwares\n\n" <>
+          "=>gemini://gemini.rmf-dev.com/repo/Vaati/gmiChat Source code\n" <>
+          "=>gemini://gemini.rmf-dev.com/repo/Vaati/Vgmi/readme Recommended client"
+        )
       else
         Gmi.redirect("/account")
       end
@@ -306,7 +312,7 @@ defmodule Gmichat do
       Gmi.content(
         "=>/account/contacts Go back\n\n" <>
         "# " <> to.name <> " - Direct messages\n\n" <>
-        show_messages(results, user.timezone, user.linelength, user.marginleft) <>
+        show_messages(results, user.timezone, user.linelength, user.leftmargin) <>
         "\n=>/account/dm/" <> to.name <> "/write Send message")
     else
       Gmi.bad_request("User " <> args[:name] <> " not found")
@@ -339,15 +345,15 @@ defmodule Gmichat do
 
   def contacts(_, user) do
     query = """
-    SELECT DISTINCT CASE $1::integer WHEN u.id THEN d.name ELSE u.name END FROM messages m
-    INNER JOIN users u ON m.user_id = u.id
-    INNER JOIN users d ON m.destination = d.id
-    WHERE m.dm = 1 AND (m.destination = $1::integer OR m.user_id = $1::integer)
-    ORDER BY (SELECT MAX(timestamp) 
-      FROM messages WHERE 
-        (user_id=m.destination AND destination=m.user_id) OR
-        (user_id=m.user_id AND destination=m.destination)) DESC;
+    SELECT name FROM 
+    (SELECT DISTINCT
+    (CASE WHEN user_id=$1::integer THEN destination ELSE user_id END) AS uid, MAX(timestamp)
+    FROM messages WHERE dm = true AND (destination = $1::integer OR user_id = $1::integer)
+    GROUP BY uid) dms
+    INNER JOIN users u ON u.id = dms.uid
+    ORDER BY dms.max DESC;
     """
+
     results = Ecto.Adapters.SQL.query!(Gmichat.Repo, query, [user.id])
     
     Gmi.content("=>/account Go back\n\n# Contacts\n\n" <>
