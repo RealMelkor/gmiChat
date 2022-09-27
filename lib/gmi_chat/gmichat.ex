@@ -300,7 +300,7 @@ defmodule Gmichat do
   end
 
   def dm(args, user) do
-    to = Gmichat.User |> Gmichat.Repo.get_by(name: args[:name])
+    to = Gmichat.User |> Gmichat.Repo.get_by(name: String.downcase(args[:name]))
     if to != nil and user.id != to.id do
       results = Ecto.Query.from m in Gmichat.Message,
       order_by: [desc: m.timestamp],
@@ -347,8 +347,9 @@ defmodule Gmichat do
     query = """
     SELECT name FROM 
     (SELECT DISTINCT
-    (CASE WHEN user_id=$1::integer THEN destination ELSE user_id END) AS uid, MAX(timestamp)
-    FROM messages WHERE dm = true AND (destination = $1::integer OR user_id = $1::integer)
+    (CASE WHEN user_id=$1::integer THEN destination ELSE user_id END) AS uid,
+    MAX(timestamp) as max
+    FROM messages WHERE dm = 1 AND (destination = $1::integer OR user_id = $1::integer)
     GROUP BY uid) dms
     INNER JOIN users u ON u.id = dms.uid
     ORDER BY dms.max DESC;
